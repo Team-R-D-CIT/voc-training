@@ -4,13 +4,13 @@
   "top_features": [
     "mq6_mems_ratio",
     "mems_odor_1_max",
+    "mq6_1_mean",
+    "mems_odor_1_min",
     "mems_odor_1_mean",
     "mems_odor_1_median",
-    "mq6_1_mean",
     "mems_odor_1_energy",
     "mq6_1_min",
     "mq6_1_energy",
-    "mems_odor_1_min",
     "mq6_1_median",
     "mq6_1_max",
     "mems_delta",
@@ -42,7 +42,7 @@
     "u754635ertdc"
   ],
   "max_round": 99,
-  "train_cutoff": 97,
-  "trained_at": "2026-02-26T15:10:04.884604",
+  "train_cutoff": 95,
+  "trained_at": "2026-02-26T15:06:58.258364",
   "test_accuracy": 0.0
 }

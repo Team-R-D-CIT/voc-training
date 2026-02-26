@@ -38,6 +38,15 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+# Machine Learning
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, VotingClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.svm import SVC
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import cross_val_score
+from sklearn.pipeline import Pipeline
+
 # ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -481,10 +490,6 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
     """Background retraining thread."""
     global mc
 
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.model_selection import cross_val_score
-    from sklearn.preprocessing import LabelEncoder
-
     job.status  = "running"
     job.started = datetime.now().isoformat()
     t0 = time.time()
@@ -498,16 +503,10 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
         df = pd.read_csv(DATA_CSV)
         job.log(f"Loaded {len(df)} rows, {df['user_id'].nunique()} persons")
 
-        # Show per-person counts
-        counts = df['user_id'].value_counts()
-        for uid, cnt in counts.items():
-            job.log(f"  {uid}: {cnt} samples")
-
         # ── 2. Feature engineering ────────────────────────────
         job.log("Engineering features…")
         df = engineer_features_df(df)
 
-        # Define feature columns (exclude id, user_id, round_no)
         raw_sensor_cols = [c for c in df.columns
                           if c.startswith(('mq6_1_', 'mems_odor_1_'))
                           and c in df.columns]
@@ -519,120 +518,92 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
         feature_cols = raw_sensor_cols + engineered_cols
         feature_cols = [c for c in feature_cols if c in df.columns]
 
-        job.log(f"Using {len(feature_cols)} features: {feature_cols[:10]}…")
-
         # ── 3. Train/test split by round ──────────────────────
         max_round = int(df['round_no'].max())
         test_cutoff = max_round - params.test_rounds + 1
         train_mask = df['round_no'] < test_cutoff
         test_mask  = df['round_no'] >= test_cutoff
 
-        X_train = df.loc[train_mask, feature_cols].fillna(0)
-        X_test  = df.loc[test_mask,  feature_cols].fillna(0)
+        X_train = df.loc[train_mask, feature_cols].fillna(0).values
+        X_test  = df.loc[test_mask,  feature_cols].fillna(0).values
 
         le_new = LabelEncoder()
         y_all = le_new.fit_transform(df['user_id'])
         y_train = y_all[train_mask.values]
         y_test  = y_all[test_mask.values]
 
-        job.log(f"Train: {len(X_train)} rows (rounds 1–{test_cutoff - 1})")
-        job.log(f"Test : {len(X_test)} rows (rounds {test_cutoff}–{max_round})")
-        job.log(f"Persons: {len(le_new.classes_)}")
+        job.log(f"Train samples: {len(X_train)} | Test samples: {len(X_test)}")
 
         if len(X_train) < 5:
-            raise ValueError("Not enough training data")
+            raise ValueError("Not enough training data (need >5 samples)")
 
-        # ── 4. Cross-validation ───────────────────────────────
-        job.log(f"Training RandomForestClassifier (n_estimators={params.n_estimators})…")
-        new_model = RandomForestClassifier(
-            n_estimators=params.n_estimators,
-            max_depth=params.max_depth,
-            min_samples_leaf=1,
-            min_samples_split=2,
-            class_weight='balanced',
-            bootstrap=True,
-            random_state=42,
-            n_jobs=-1,
+        # ── 4. Define Ensemble (Voting) ────────────────────────
+        job.log("Building 5-model Ensemble (RF, ET, KNN, SVM, ANN)…")
+
+        # Tree-based (no scaling needed)
+        rf = RandomForestClassifier(n_estimators=params.n_estimators, random_state=42, n_jobs=-1, class_weight='balanced')
+        et = ExtraTreesClassifier(n_estimators=params.n_estimators, random_state=42, n_jobs=-1, class_weight='balanced')
+
+        # Distance/Gradient based (scaling REQUIRED)
+        knn = Pipeline([("scaler", StandardScaler()), ("knn", KNeighborsClassifier(n_neighbors=5))])
+        svm = Pipeline([("scaler", StandardScaler()), ("svc", SVC(probability=True, kernel='rbf', C=1.0, class_weight='balanced', random_state=42))])
+        ann = Pipeline([("scaler", StandardScaler()), ("ann", MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=500, alpha=0.001, random_state=42))])
+
+        ensemble = VotingClassifier(
+            estimators=[
+                ('rf', rf),
+                ('et', et),
+                ('knn', knn),
+                ('svm', svm),
+                ('ann', ann)
+            ],
+            voting='soft'   # use probability averaging
         )
 
-        n_splits = min(5, len(set(y_train)))
-        if n_splits >= 2 and len(X_train) >= n_splits:
-            job.log(f"Running {n_splits}-fold cross-validation on training set…")
-            cv_scores = cross_val_score(new_model, X_train, y_train,
-                                        cv=n_splits, scoring='accuracy')
-            for i, s in enumerate(cv_scores):
-                job.log(f"  Fold {i+1}: {s:.4f}")
-            job.log(f"  CV mean accuracy: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+        n_splits = min(5, len(np.unique(y_train)))
+        if n_splits >= 2:
+            job.log(f"Running {n_splits}-fold cross-validation on Ensemble…")
+            cv_scores = cross_val_score(ensemble, X_train, y_train, cv=n_splits)
+            job.log(f"  CV result: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
 
         # ── 5. Final fit ──────────────────────────────────────
-        job.log("Fitting final model on full training set…")
-        new_model.fit(X_train, y_train)
-        job.log(f"Training complete. {new_model.n_estimators} trees built.")
+        job.log("Fitting Ensemble on full training set…")
+        ensemble.fit(X_train, y_train)
 
-        # ── 6. Evaluate on test set ───────────────────────────
+        # ── 6. Evaluate ───────────────────────────────────────
         if len(X_test) > 0:
-            test_acc = float(new_model.score(X_test, y_test))
-            job.log(f"✅ Test accuracy: {test_acc:.4f} ({int(test_acc * len(y_test))}/{len(y_test)} correct)")
+            test_acc = float(ensemble.score(X_test, y_test))
+            job.log(f"✅ Ensemble Test Accuracy: {test_acc:.4f} ({int(test_acc * len(y_test))}/{len(y_test)} correct)")
             job.accuracy = round(test_acc, 4)
-
-            # Per-person test accuracy
-            preds = new_model.predict(X_test)
-            for cls_idx, cls_name in enumerate(le_new.classes_):
-                mask = (y_test == cls_idx)
-                if mask.sum() > 0:
-                    cls_acc = (preds[mask] == y_test[mask]).mean()
-                    job.log(f"  {cls_name}: {cls_acc:.2%} ({mask.sum()} test samples)")
         else:
-            job.log("⚠ No test data — skipping evaluation")
             job.accuracy = None
 
-        # ── 7. Feature importance ─────────────────────────────
-        importances = new_model.feature_importances_
-        top_idx = np.argsort(importances)[::-1][:15]
-        top_feat_names = [feature_cols[i] for i in top_idx]
-        job.log(f"Top features: {top_feat_names[:5]}…")
-
-        # ── 8. Save artifacts ─────────────────────────────────
-        job.log("Saving model artifacts…")
-
-        # Backup old model
+        # ── 7. Save ───────────────────────────────────────────
+        job.log("Saving ensemble artifacts…")
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        for f in MODEL_DIR.glob("*.pkl"):
-            shutil.copy2(f, BACKUP_DIR / f"{f.stem}_{ts}{f.suffix}")
-        for f in MODEL_DIR.glob("*.json"):
-            shutil.copy2(f, BACKUP_DIR / f"{f.stem}_{ts}{f.suffix}")
-        job.log(f"Old model backed up to {BACKUP_DIR}")
+        for f_path in MODEL_DIR.glob("*.pkl"):
+            shutil.copy2(f_path, BACKUP_DIR / f"{f_path.stem}_{ts}{f_path.suffix}")
 
-        # Save new artifacts
-        joblib.dump(new_model,      MODEL_DIR / "model.pkl")
-        joblib.dump(le_new,         MODEL_DIR / "label_encoder.pkl")
-        joblib.dump(top_feat_names, MODEL_DIR / "top_features.pkl")
+        joblib.dump(ensemble,   MODEL_DIR / "model.pkl")
+        joblib.dump(le_new,     MODEL_DIR / "label_encoder.pkl")
+        joblib.dump(feature_cols, MODEL_DIR / "top_features.pkl") # use all features as order reference
 
         new_metadata = {
             "n_persons":     len(le_new.classes_),
             "n_features":    len(feature_cols),
-            "top_features":  top_feat_names,
             "persons":       list(le_new.classes_),
-            "max_round":     max_round,
-            "train_cutoff":  test_cutoff,
             "trained_at":    datetime.now().isoformat(),
             "test_accuracy": job.accuracy,
+            "ensemble_members": ["RandomForest", "ExtraTrees", "KNN", "SVM", "ANN"]
         }
         with open(MODEL_DIR / "metadata.json", "w") as f:
             json.dump(new_metadata, f, indent=2)
 
-        job.log("Artifacts saved to disk.")
-
-        # ── 9. Hot-reload model in memory ─────────────────────
-        job.log("Hot-reloading model in memory…")
+        # ── 8. Hot-reload ─────────────────────────────────────
         mc.load()
-        job.log(f"✅ Model reloaded: {type(mc.model).__name__}, {len(mc.features)} features, {mc.metadata['n_persons']} persons")
-
-        # ── Done ──────────────────────────────────────────────
-        elapsed = time.time() - t0
-        job.log(f"✅ Retraining complete in {elapsed:.1f}s")
-        job.status   = "done"
+        job.log(f"✅ Ensemble active: {len(mc.metadata['persons'])} persons")
+        job.status = "done"
         job.finished = datetime.now().isoformat()
 
     except Exception as e:
