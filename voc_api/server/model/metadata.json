@@ -1,23 +1,6 @@
 {
   "n_persons": 21,
   "n_features": 30,
-  "top_features": [
-    "mq6_mems_ratio",
-    "mems_odor_1_max",
-    "mems_odor_1_mean",
-    "mems_odor_1_median",
-    "mq6_1_mean",
-    "mems_odor_1_energy",
-    "mq6_1_min",
-    "mq6_1_energy",
-    "mems_odor_1_min",
-    "mq6_1_median",
-    "mq6_1_max",
-    "mems_delta",
-    "mems_odor_1_cv",
-    "mems_odor_1_std",
-    "range_mems"
-  ],
   "persons": [
     "098765t",
     "1234dgcvjbj767",
@@ -41,8 +24,13 @@
     "98734zzxc",
     "u754635ertdc"
   ],
-  "max_round": 99,
-  "train_cutoff": 97,
-  "trained_at": "2026-02-26T15:10:04.884604",
-  "test_accuracy": 0.0
+  "trained_at": "2026-02-26T15:14:27.246084",
+  "test_accuracy": 0.2,
+  "ensemble_members": [
+    "RandomForest",
+    "ExtraTrees",
+    "KNN",
+    "SVM",
+    "ANN"
+  ]
 }

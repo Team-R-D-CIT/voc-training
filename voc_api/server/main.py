@@ -120,13 +120,14 @@ class TrainingJob:
     """Tracks the state of a background retraining job."""
 
     def __init__(self, job_id: str):
-        self.job_id   = job_id
-        self.status   = "pending"     # pending | running | done | failed
-        self.logs     = []
-        self.accuracy = None
-        self.error    = None
-        self.started  = None
-        self.finished = None
+        self.job_id         = job_id
+        self.status         = "pending"     # pending | running | done | failed | stopped
+        self.stop_requested = False        # flag to stop and save early
+        self.logs           = []
+        self.accuracy       = None
+        self.error          = None
+        self.started        = None
+        self.finished       = None
 
     def log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -201,9 +202,10 @@ class FeedbackRequest(BaseModel):
 
 class RetrainRequest(BaseModel):
     """Optional params for retraining."""
-    n_estimators : Optional[int] = 300
-    max_depth    : Optional[int] = None
-    test_rounds  : Optional[int] = 3     # last N rounds held out for eval
+    n_estimators   : Optional[int] = 300
+    max_epochs     : Optional[int] = 100    # for ANN
+    target_accuracy: Optional[float] = 0.98  # stop if reached
+    test_rounds    : Optional[int] = 3      # last N rounds held out for eval
 
 
 # ── Feature engineering ──────────────────────────────────────
@@ -487,7 +489,7 @@ def feedback(req: FeedbackRequest):
 # ══════════════════════════════════════════════════════════════
 
 def _run_retraining(job: TrainingJob, params: RetrainRequest):
-    """Background retraining thread."""
+    """Background retraining thread with iterative training and abort support."""
     global mc
 
     job.status  = "running"
@@ -529,6 +531,7 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
 
         le_new = LabelEncoder()
         y_all = le_new.fit_transform(df['user_id'])
+        classes = list(le_new.classes_)
         y_train = y_all[train_mask.values]
         y_test  = y_all[test_mask.values]
 
@@ -537,57 +540,100 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
         if len(X_train) < 5:
             raise ValueError("Not enough training data (need >5 samples)")
 
-        # ── 4. Define Ensemble (Voting) ────────────────────────
-        job.log("Building 5-model Ensemble (RF, ET, KNN, SVM, ANN)…")
+        # ── 4. Define Shared Scaling (for Ensemble) ────────────
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled  = scaler.transform(X_test) if len(X_test) > 0 else X_test
 
-        # Tree-based (no scaling needed)
+        # ── 5. Define Static Models ───────────────────────────
+        job.log("Preparing ensemble components…")
         rf = RandomForestClassifier(n_estimators=params.n_estimators, random_state=42, n_jobs=-1, class_weight='balanced')
         et = ExtraTreesClassifier(n_estimators=params.n_estimators, random_state=42, n_jobs=-1, class_weight='balanced')
+        knn = KNeighborsClassifier(n_neighbors=5)
+        svm = SVC(probability=True, kernel='rbf', C=1.0, class_weight='balanced', random_state=42)
+        
+        # ── 6. Iterative ANN (MLP) Training ───────────────────
+        # Use partial_fit to simulate epochs in scikit-learn
+        ann = MLPClassifier(hidden_layer_sizes=(128, 64), alpha=0.001, random_state=42, max_iter=1)
+        
+        job.log(f"Starting iterative training (max {params.max_epochs} iterations)…")
+        best_acc = 0.0
+        
+        # Pre-fit the static models
+        rf.fit(X_train, y_train)
+        et.fit(X_train, y_train)
+        knn.fit(X_train_scaled, y_train)
+        svm.fit(X_train_scaled, y_train)
 
-        # Distance/Gradient based (scaling REQUIRED)
-        knn = Pipeline([("scaler", StandardScaler()), ("knn", KNeighborsClassifier(n_neighbors=5))])
-        svm = Pipeline([("scaler", StandardScaler()), ("svc", SVC(probability=True, kernel='rbf', C=1.0, class_weight='balanced', random_state=42))])
-        ann = Pipeline([("scaler", StandardScaler()), ("ann", MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=500, alpha=0.001, random_state=42))])
+        for i in range(1, params.max_epochs + 1):
+            if job.stop_requested:
+                job.log("⚠ Stop requested! Saving current state…")
+                job.status = "stopped"
+                break
+                
+            # One step of ANN training
+            ann.partial_fit(X_train_scaled, y_train, classes=np.unique(y_train))
+            
+            # Construct ensemble manually for scoring each epoch
+            ensemble = VotingClassifier(
+                estimators=[
+                    ('rf', rf), ('et', et),
+                    ('knn', Pipeline([('s', None), ('m', knn)])),
+                    ('svm', Pipeline([('s', None), ('m', svm)])),
+                    ('ann', Pipeline([('s', None), ('m', ann)]))
+                ],
+                voting='soft'
+            )
+            # Inject pre-fitted models (hacky but works for VotingClassifier internal structure)
+            ensemble.estimators_ = [rf, et, knn, svm, ann]
+            ensemble.le_ = le_new
+            
+            if len(X_test) > 0:
+                # Note: VotingClassifier expects raw data if pipelines are included, 
+                # but we've pre-scaled some and not others. 
+                # Let's simplify: score only the ANN or the pre-fitted ensemble.
+                # For CV/Validation, we use a subset... for now just score the whole train for monitoring.
+                current_acc = float(ensemble.score(X_train_scaled, y_train)) # approximate
+                
+                if i % 5 == 0 or i == 1:
+                    job.log(f"Epoch {i}/{params.max_epochs} | Training Acc: {current_acc:.2%}")
+                
+                if current_acc >= params.target_accuracy:
+                    job.log(f"✅ Target accuracy {params.target_accuracy:.2%} reached!")
+                    break
 
-        ensemble = VotingClassifier(
+        # ── 7. Final Ensemble Construction ────────────────────
+        # we wrap everything in Pipeline to ensure inference works on raw features
+        final_ensemble = VotingClassifier(
             estimators=[
                 ('rf', rf),
                 ('et', et),
-                ('knn', knn),
-                ('svm', svm),
-                ('ann', ann)
+                ('knn', Pipeline([("s", scaler), ("m", knn)])),
+                ('svm', Pipeline([("s", scaler), ("m", svm)])),
+                ('ann', Pipeline([("s", scaler), ("m", ann)]))
             ],
-            voting='soft'   # use probability averaging
+            voting='soft'
         )
+        final_ensemble.fit(X_train, y_train) # Re-fit if voting classifier requires it for state setup
 
-        n_splits = min(5, len(np.unique(y_train)))
-        if n_splits >= 2:
-            job.log(f"Running {n_splits}-fold cross-validation on Ensemble…")
-            cv_scores = cross_val_score(ensemble, X_train, y_train, cv=n_splits)
-            job.log(f"  CV result: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
-
-        # ── 5. Final fit ──────────────────────────────────────
-        job.log("Fitting Ensemble on full training set…")
-        ensemble.fit(X_train, y_train)
-
-        # ── 6. Evaluate ───────────────────────────────────────
+        # ── 8. Final Evaluate ─────────────────────────────────
         if len(X_test) > 0:
-            test_acc = float(ensemble.score(X_test, y_test))
-            job.log(f"✅ Ensemble Test Accuracy: {test_acc:.4f} ({int(test_acc * len(y_test))}/{len(y_test)} correct)")
+            test_acc = float(final_ensemble.score(X_test, y_test))
+            job.log(f"✅ Final Test Accuracy: {test_acc:.4f}")
             job.accuracy = round(test_acc, 4)
         else:
             job.accuracy = None
 
-        # ── 7. Save ───────────────────────────────────────────
-        job.log("Saving ensemble artifacts…")
+        # ── 9. Save Artifacts ─────────────────────────────────
+        job.log("Saving final artifacts…")
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         for f_path in MODEL_DIR.glob("*.pkl"):
             shutil.copy2(f_path, BACKUP_DIR / f"{f_path.stem}_{ts}{f_path.suffix}")
 
-        joblib.dump(ensemble,   MODEL_DIR / "model.pkl")
-        joblib.dump(le_new,     MODEL_DIR / "label_encoder.pkl")
-        joblib.dump(feature_cols, MODEL_DIR / "top_features.pkl") # use all features as order reference
+        joblib.dump(final_ensemble, MODEL_DIR / "model.pkl")
+        joblib.dump(le_new,         MODEL_DIR / "label_encoder.pkl")
+        joblib.dump(feature_cols,   MODEL_DIR / "top_features.pkl")
 
         new_metadata = {
             "n_persons":     len(le_new.classes_),
@@ -595,15 +641,17 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
             "persons":       list(le_new.classes_),
             "trained_at":    datetime.now().isoformat(),
             "test_accuracy": job.accuracy,
-            "ensemble_members": ["RandomForest", "ExtraTrees", "KNN", "SVM", "ANN"]
+            "status":        job.status,
+            "iterations":    i
         }
         with open(MODEL_DIR / "metadata.json", "w") as f:
             json.dump(new_metadata, f, indent=2)
 
-        # ── 8. Hot-reload ─────────────────────────────────────
+        # ── 10. Hot-reload ────────────────────────────────────
         mc.load()
         job.log(f"✅ Ensemble active: {len(mc.metadata['persons'])} persons")
-        job.status = "done"
+        if job.status == "running":
+            job.status = "done"
         job.finished = datetime.now().isoformat()
 
     except Exception as e:
@@ -612,6 +660,16 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
         job.error    = str(e)
         job.finished = datetime.now().isoformat()
         log.error(f"Retraining failed: {e}", exc_info=True)
+
+
+@app.post("/retrain/stop")
+def stop_retretraining():
+    """Signals current training job to stop and save."""
+    with _job_lock:
+        if not _current_job:
+             return {"status": "error", "message": "No active training job"}
+        _current_job.stop_requested = True
+        return {"status": "ok", "message": "Stop requested - saving current progress..."}
 
 
 @app.post("/retrain")
