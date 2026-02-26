@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv*/
+env/
+venv/
+ENV/
+build/
+dist/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# ML Models & Data (Ignore large files)
+*.pkl
+*.joblib
+*.h5
+*.model
+voc_model/
+voc_model_export.zip
+data.csv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project Specific
+setup.sh.log
+*.pyc

@@ -1,0 +1,6 @@
+requests==2.32.3
+numpy==1.26.4
+scipy==1.13.1
+# Hardware — comment out if testing without Pi
+# RPi.GPIO==0.7.1
+# adafruit-circuitpython-ads1x15==2.3.4
