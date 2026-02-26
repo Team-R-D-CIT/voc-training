@@ -86,7 +86,9 @@ class ModelContainer:
                 self.metadata = json.load(f)
 
             # Detect actual feature list from the trained model
-            if hasattr(self.model, 'feature_names_in_'):
+            if self.top_features:
+                self.features = self.top_features
+            elif hasattr(self.model, 'feature_names_in_'):
                 self.features = list(self.model.feature_names_in_)
             else:
                 self.features = [
@@ -603,7 +605,8 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
                     break
 
         # ── 7. Final Ensemble Construction ────────────────────
-        # we wrap everything in Pipeline to ensure inference works on raw features
+        # To avoid re-fitting (which resets ANN weights), we manually 
+        # assemble the fitted VotingClassifier components.
         final_ensemble = VotingClassifier(
             estimators=[
                 ('rf', rf),
@@ -614,7 +617,10 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
             ],
             voting='soft'
         )
-        final_ensemble.fit(X_train, y_train) # Re-fit if voting classifier requires it for state setup
+        # Pre-set the fitted parts
+        final_ensemble.estimators_ = [rf, et, knn, svm, ann]
+        final_ensemble.le_ = le_new
+        final_ensemble.classes_ = le_new.classes_
 
         # ── 8. Final Evaluate ─────────────────────────────────
         if len(X_test) > 0:

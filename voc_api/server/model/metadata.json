@@ -24,13 +24,8 @@
     "98734zzxc",
     "u754635ertdc"
   ],
-  "trained_at": "2026-02-26T15:14:27.246084",
-  "test_accuracy": 0.2,
-  "ensemble_members": [
-    "RandomForest",
-    "ExtraTrees",
-    "KNN",
-    "SVM",
-    "ANN"
-  ]
+  "trained_at": "2026-02-26T15:18:43.938586",
+  "test_accuracy": 0.0,
+  "status": "running",
+  "iterations": 100
 }
