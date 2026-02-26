@@ -1,29 +1,28 @@
 {
-  "n_persons": 20,
+  "n_persons": 19,
   "n_features": 30,
   "top_features": [
-    "mq6_mems_ratio",
-    "mems_odor_1_min",
     "mems_odor_1_mean",
+    "mq6_mems_ratio",
+    "mems_odor_1_median",
     "mq6_1_median",
     "mems_odor_1_max",
-    "mems_odor_1_median",
-    "mq6_1_min",
-    "mq6_1_mean",
+    "mems_odor_1_min",
     "mq6_1_energy",
+    "mq6_1_min",
     "mems_odor_1_energy",
+    "mq6_1_mean",
     "mq6_1_max",
     "mems_delta",
     "mems_odor_1_std",
     "mems_odor_1_cv",
-    "mq6_delta"
+    "range_mems"
   ],
   "persons": [
     "098765t",
     "1234dgcvjbj767",
     "1242121wews",
     "1CD23AI098",
-    "1CD23IC026",
     "1CD24EC182",
     "2343esdsazw2",
     "2345trrwesfd",
@@ -40,8 +39,8 @@
     "98734zzxc",
     "u754635ertdc"
   ],
-  "max_round": 99,
-  "train_cutoff": 95,
-  "trained_at": "2026-02-26T14:59:11.312368",
-  "test_accuracy": 0.3333
+  "max_round": 15,
+  "train_cutoff": 13,
+  "trained_at": "2026-02-26T14:41:36.596523",
+  "test_accuracy": 0.0
 }

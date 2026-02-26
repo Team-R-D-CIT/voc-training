@@ -42,6 +42,6 @@
   ],
   "max_round": 99,
   "train_cutoff": 95,
-  "trained_at": "2026-02-26T14:59:11.312368",
+  "trained_at": "2026-02-26T14:58:57.931085",
   "test_accuracy": 0.3333
 }

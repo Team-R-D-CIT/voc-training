@@ -192,7 +192,7 @@ class FeedbackRequest(BaseModel):
 
 class RetrainRequest(BaseModel):
     """Optional params for retraining."""
-    n_estimators : Optional[int] = 200
+    n_estimators : Optional[int] = 300
     max_depth    : Optional[int] = None
     test_rounds  : Optional[int] = 3     # last N rounds held out for eval
 
@@ -547,7 +547,10 @@ def _run_retraining(job: TrainingJob, params: RetrainRequest):
         new_model = RandomForestClassifier(
             n_estimators=params.n_estimators,
             max_depth=params.max_depth,
-            min_samples_leaf=2,
+            min_samples_leaf=1,
+            min_samples_split=2,
+            class_weight='balanced',
+            bootstrap=True,
             random_state=42,
             n_jobs=-1,
         )
