@@ -1,0 +1,43 @@
+{
+  "n_persons": 18,
+  "n_features": 15,
+  "top_features": [
+    "mq6_1_mean",
+    "mq6_mems_ratio",
+    "mems_odor_1_energy",
+    "mems_odor_1_max",
+    "mems_odor_1_min",
+    "mems_odor_1_mean",
+    "mq6_1_min",
+    "mems_odor_1_median",
+    "mq6_1_max",
+    "mq6_1_median",
+    "mems_delta",
+    "mems_odor_1_cv",
+    "mems_odor_1_std",
+    "range_mems",
+    "mq6_mems_std_ratio"
+  ],
+  "persons": [
+    "098765t",
+    "1234dgcvjbj767",
+    "1242121wews",
+    "1CD24EC182",
+    "2343esdsazw2",
+    "2345trrwesfd",
+    "2423eqd",
+    "24356esd",
+    "34567hgcgvhb",
+    "454657654tdfhdg",
+    "456765yugyh",
+    "5647382910ddee",
+    "67990865tgvb",
+    "7t6r5d",
+    "876545676tfgv",
+    "8765e6tyug",
+    "98734zzxc",
+    "u754635ertdc"
+  ],
+  "max_round": 10,
+  "train_cutoff": 7
+}
